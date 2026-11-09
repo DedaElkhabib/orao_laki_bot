@@ -74,11 +74,41 @@ async function fetchFeed() {
   return feed.items || [];
 }
 
+// Videa mlađa od ovoga se objavljuju ako ih bot već nije objavio u kanalu
+const RECENT_HOURS = 48;
+
 async function initYoutube() {
   try {
     const items = await fetchFeed();
-    items.forEach((i) => seen.add(i.id));
-    console.log(`YouTube: učitano ${items.length} postojećih videa (neće se objavljivati).`);
+
+    // Pročitaj poslednje poruke u kanalu da vidimo šta je već objavljeno
+    let history = '';
+    let historyOk = false;
+    if (NOTIFY_CHANNEL_ID) {
+      try {
+        const channel = await client.channels.fetch(NOTIFY_CHANNEL_ID);
+        const msgs = await channel.messages.fetch({ limit: 100 });
+        history = msgs.map((m) => m.content).join('\n');
+        historyOk = true;
+      } catch (e) {
+        console.error('Ne mogu da pročitam istoriju kanala (treba Read Message History):', e.message);
+      }
+    }
+
+    const cutoff = Date.now() - RECENT_HOURS * 3600 * 1000;
+    let pending = 0;
+    for (const v of items) {
+      const videoId = (v.id || '').replace('yt:video:', '');
+      const published = new Date(v.isoDate || v.pubDate || 0).getTime();
+      const alreadyPosted = history.includes(videoId);
+      const isRecent = published > cutoff;
+      if (alreadyPosted || !isRecent || !historyOk) {
+        seen.add(v.id);
+      } else {
+        pending++; // novo i neobjavljeno -> checkYoutube će ga poslati
+      }
+    }
+    console.log(`YouTube: ${items.length} videa u feedu, ${pending} čeka objavu.`);
   } catch (e) {
     console.error('YouTube init greška:', e.message);
   }
@@ -269,6 +299,7 @@ client.once('clientReady', async () => {
   rotateStatus();
   setInterval(rotateStatus, 30 * 1000);
   await initYoutube();
+  await checkYoutube(); // odmah objavi neobjavljene nove videe
   setInterval(checkYoutube, CHECK_EVERY_MS);
 });
 
